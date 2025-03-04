@@ -4,8 +4,13 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 %files
     # Copy the entire project directory from local machine
     ./ /opt/hunyuan3d/
-    # Ensure the script is included
+
+    # Include static duck OBJ file
+    rubber_duck.obj /opt/hunyuan3d/static_model/model.obj
+
+    # Ensure the patched scripts are included
     hunyuan3d_patched.py /opt/hunyuan3d/hunyuan3d_patched.py
+    static_texture.py /opt/hunyuan3d/static_texture.py
 
 %environment
     export LC_ALL=C
@@ -39,8 +44,12 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
     cd /opt/hunyuan3d
     pip3 install -r requirements.txt
 
-    # Make the script executable
+    # Make the scripts executable
     chmod +x /opt/hunyuan3d/hunyuan3d_patched.py
+    chmod +x /opt/hunyuan3d/static_texture.py
+
+    # Create static model directory if it doesn't exist
+    mkdir -p /opt/hunyuan3d/static_model
 
     # Create output directories
     mkdir -p /tmp/outputs
@@ -50,8 +59,14 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
     mkdir -p $HOME/.hunyuan3d_cache
     mkdir -p $HOME/hunyuan3d_outputs
 
-    # Run the patched script
-    exec /opt/hunyuan3d/hunyuan3d_patched.py "$@"
+    # Check if we're being asked to texture the static model
+    if [ "$1" = "--texture-static" ]; then
+        shift
+        exec /opt/hunyuan3d/static_texture.py "$@"
+    else
+        # Otherwise run the standard script
+        exec /opt/hunyuan3d/hunyuan3d_patched.py "$@"
+    fi
 
 %labels
     Author Osmani Dion
@@ -63,14 +78,14 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
     Usage:
 
-    1. Run with default image:
-       $ apptainer run --nv hunyuan3d.sif
+    1. Generate 3D from image:
+       $ apptainer run --nv image.sif --image /path/to/your/image.jpg
 
-    2. Run with a custom image:
-       $ apptainer run --nv hunyuan3d.sif --image /path/to/your/image.jpg
+    2. Texture the static OBJ file included in the container:
+       $ apptainer run --nv image.sif --texture-static --image /path/to/ref_image.jpg
 
-    3. Run with custom output location:
-       $ apptainer run --nv hunyuan3d.sif --output /path/to/output.glb
+    3. Texture with a text prompt:
+       $ apptainer run --nv image.sif --texture-static --image /path/to/ref_image.jpg --prompt "marble statue"
 
     The container will create:
     - Cache directory in $HOME/.hunyuan3d_cache
