@@ -10,7 +10,6 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
     # Ensure the patched scripts are included
     hunyuan3d_patched.py /opt/hunyuan3d/hunyuan3d_patched.py
-    static_texture.py /opt/hunyuan3d/static_texture.py
 
 %environment
     export LC_ALL=C
@@ -46,7 +45,6 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
     # Make the scripts executable
     chmod +x /opt/hunyuan3d/hunyuan3d_patched.py
-    chmod +x /opt/hunyuan3d/static_texture.py
 
     # Create static model directory if it doesn't exist
     mkdir -p /opt/hunyuan3d/static_model
@@ -59,14 +57,7 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
     mkdir -p $HOME/.hunyuan3d_cache
     mkdir -p $HOME/hunyuan3d_outputs
 
-    # Check if we're being asked to texture the static model
-    if [ "$1" = "--texture-static" ]; then
-        shift
-        exec /opt/hunyuan3d/static_texture.py "$@"
-    else
-        # Otherwise run the standard script
-        exec /opt/hunyuan3d/hunyuan3d_patched.py "$@"
-    fi
+    exec /opt/hunyuan3d/hunyuan3d_patched.py "$@"
 
 %labels
     Author Osmani Dion
