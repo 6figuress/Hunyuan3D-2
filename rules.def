@@ -4,6 +4,7 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 %files
     # Copy the entire project directory from local machine
     ./ /opt/hunyuan3d/
+    # Note: This will copy everything from your current directory to /opt/hunyuan3d/
 
 %environment
     export LC_ALL=C
@@ -33,12 +34,14 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
     bash /tmp/miniconda.sh -b -p /opt/conda
     rm /tmp/miniconda.sh
 
-    # Set path to conda
+    # Set path to conda without relying on .bashrc
     export PATH="/opt/conda/bin:$PATH"
 
-    # Create conda environment
-    conda init bash
-    . /root/.bashrc
+    # Initialize conda for shell without sourcing .bashrc
+    conda init
+
+    # Directly enable conda command without source
+    eval "$(/opt/conda/bin/conda shell.bash hook)"
 
     # Install PyTorch with CUDA 12.1
     conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
