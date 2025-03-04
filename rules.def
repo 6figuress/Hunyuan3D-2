@@ -8,9 +8,6 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 %environment
     export LC_ALL=C
     export PYTHONPATH="/opt/hunyuan3d:$PYTHONPATH"
-    # Use /tmp for HuggingFace cache which is writable
-    export HF_HOME="/tmp/huggingface"
-    # Set CUDA environment variables
     export CUDA_HOME=/usr/local/cuda
     export PATH=$CUDA_HOME/bin:$PATH
     export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
@@ -40,20 +37,32 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
     cd /opt/hunyuan3d
     pip3 install -r requirements.txt
 
-    # Create directory to store model outputs (temporary location)
-    mkdir -p /tmp/hunyuan3d_outputs
+    # Create a startup script that will handle the cache directory
+    cat > /opt/hunyuan3d/run_hunyuan3d.sh << 'EOF'
+#!/bin/bash
+set -e
 
-    # Create a modified minimal_demo.py that avoids using custom extensions
-    cat > /opt/hunyuan3d/simple_demo.py << 'EOF'
+# Create cache and output directories in user's home
+CACHE_DIR="${HOME}/.hunyuan3d_cache"
+OUTPUT_DIR="${HOME}/hunyuan3d_outputs"
+
+mkdir -p "${CACHE_DIR}"
+mkdir -p "${OUTPUT_DIR}"
+
+echo "Using HuggingFace cache at: ${CACHE_DIR}"
+echo "Output directory: ${OUTPUT_DIR}"
+
+# Environment variables for the Python process
+export HF_HOME="${CACHE_DIR}"
+
+# Run the Python script with proper environment
+cd /opt/hunyuan3d
+python3 -c "
 import os
+os.environ['HF_HOME'] = '${CACHE_DIR}'
+print(f'HF_HOME set to {os.environ[\"HF_HOME\"]}')
+
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
-
-# Ensure output directory exists
-output_dir = "/tmp/hunyuan3d_outputs"
-os.makedirs(output_dir, exist_ok=True)
-
-# Print info about cache location
-print(f"Using HuggingFace cache at: {os.environ.get('HF_HOME', 'default location')}")
 
 # Load only the shape generation pipeline
 pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained('tencent/Hunyuan3D-2')
@@ -61,21 +70,20 @@ pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained('tencent/Hunyuan3D-2
 # Generate a mesh without texture
 mesh = pipeline(image='assets/demo.png')[0]
 
-# Save the mesh to writable location
-output_path = os.path.join(output_dir, 'output.glb')
+# Save the mesh to user's home directory
+output_path = '${OUTPUT_DIR}/output.glb'
 mesh.export(output_path)
-print(f"Mesh saved to {output_path}")
+print(f'Mesh saved to {output_path}')
+"
+
+echo "Done! Check ${OUTPUT_DIR} for your output files."
 EOF
 
+    # Make the script executable
+    chmod +x /opt/hunyuan3d/run_hunyuan3d.sh
+
 %runscript
-    cd /opt/hunyuan3d
-    if [ $# -eq 0 ]; then
-        # If no arguments provided, run simple demo
-        exec python3 simple_demo.py
-    else
-        # If arguments provided, run the specified command
-        exec "$@"
-    fi
+    exec /opt/hunyuan3d/run_hunyuan3d.sh "$@"
 
 %labels
     Author Osmani Dion
@@ -85,15 +93,11 @@ EOF
 %help
     This container provides the Hunyuan3D 2.0 environment for generating high-resolution textured 3D assets.
 
-    The container uses writable directories in /tmp for cache and outputs.
-
     Usage:
 
-    1. Run the simple demo:
+    1. Run the container:
        $ apptainer run --nv hunyuan3d.sif
 
-    2. Run with bind mounts for persistent storage:
-       $ apptainer run --nv -B /path/to/local/cache:/tmp/huggingface,/path/to/outputs:/tmp/hunyuan3d_outputs hunyuan3d.sif
-
-    3. Run a specific Python script:
-       $ apptainer run --nv hunyuan3d.sif python3 your_script.py
+    The container will create:
+    - Cache directory in $HOME/.hunyuan3d_cache
+    - Output directory in $HOME/hunyuan3d_outputs
