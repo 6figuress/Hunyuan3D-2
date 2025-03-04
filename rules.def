@@ -8,7 +8,8 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 %environment
     export LC_ALL=C
     export PYTHONPATH="/opt/hunyuan3d:$PYTHONPATH"
-    export HF_HOME="/opt/hunyuan3d/huggingface"
+    # Use /tmp for HuggingFace cache which is writable
+    export HF_HOME="/tmp/huggingface"
     # Set CUDA environment variables
     export CUDA_HOME=/usr/local/cuda
     export PATH=$CUDA_HOME/bin:$PATH
@@ -39,15 +40,20 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
     cd /opt/hunyuan3d
     pip3 install -r requirements.txt
 
-    # Set up HuggingFace cache directory
-    mkdir -p /opt/hunyuan3d/huggingface
-
-    # Create directory to store model outputs
-    mkdir -p /opt/hunyuan3d/outputs
+    # Create directory to store model outputs (temporary location)
+    mkdir -p /tmp/hunyuan3d_outputs
 
     # Create a modified minimal_demo.py that avoids using custom extensions
     cat > /opt/hunyuan3d/simple_demo.py << 'EOF'
+import os
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+
+# Ensure output directory exists
+output_dir = "/tmp/hunyuan3d_outputs"
+os.makedirs(output_dir, exist_ok=True)
+
+# Print info about cache location
+print(f"Using HuggingFace cache at: {os.environ.get('HF_HOME', 'default location')}")
 
 # Load only the shape generation pipeline
 pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained('tencent/Hunyuan3D-2')
@@ -55,9 +61,10 @@ pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained('tencent/Hunyuan3D-2
 # Generate a mesh without texture
 mesh = pipeline(image='assets/demo.png')[0]
 
-# Save the mesh
-mesh.export('output.glb')
-print("Mesh saved to output.glb")
+# Save the mesh to writable location
+output_path = os.path.join(output_dir, 'output.glb')
+mesh.export(output_path)
+print(f"Mesh saved to {output_path}")
 EOF
 
 %runscript
@@ -74,3 +81,19 @@ EOF
     Author Osmani Dion
     Version v1.0
     Description Hunyuan3D 2.0 container for high-resolution textured 3D asset generation
+
+%help
+    This container provides the Hunyuan3D 2.0 environment for generating high-resolution textured 3D assets.
+
+    The container uses writable directories in /tmp for cache and outputs.
+
+    Usage:
+
+    1. Run the simple demo:
+       $ apptainer run --nv hunyuan3d.sif
+
+    2. Run with bind mounts for persistent storage:
+       $ apptainer run --nv -B /path/to/local/cache:/tmp/huggingface,/path/to/outputs:/tmp/hunyuan3d_outputs hunyuan3d.sif
+
+    3. Run a specific Python script:
+       $ apptainer run --nv hunyuan3d.sif python3 your_script.py
