@@ -1,4 +1,5 @@
 #!/bin/bash
+#SBATCH --partition=Dance        # Partition to run the job on
 #SBATCH --job-name=hunyuan3d     # create a short name for your job
 #SBATCH --nodes=1                # node count
 #SBATCH --ntasks=1               # total number of tasks across all nodes
