@@ -1,0 +1,83 @@
+Bootstrap: docker
+From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+
+%files
+    # Copy the entire project directory from local machine
+    ./ /opt/hunyuan3d/
+
+%environment
+    export LC_ALL=C
+    export PATH="/opt/conda/bin:$PATH"
+    export PYTHONPATH="/opt/hunyuan3d:$PYTHONPATH"
+    export HF_HOME="/opt/hunyuan3d/huggingface"
+
+%post
+    # Update and install dependencies
+    apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        wget \
+        curl \
+        ca-certificates \
+        build-essential \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        ninja-build \
+        python3-dev \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Install Miniconda
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
+    bash /tmp/miniconda.sh -b -p /opt/conda
+    rm /tmp/miniconda.sh
+
+    # Set path to conda
+    export PATH="/opt/conda/bin:$PATH"
+
+    # Create conda environment
+    conda init bash
+    . /root/.bashrc
+
+    # Install PyTorch with CUDA 12.1
+    conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+
+    # Install pip packages
+    cd /opt/hunyuan3d
+    pip install -r requirements.txt
+
+    # Set up HuggingFace cache directory
+    mkdir -p /opt/hunyuan3d/huggingface
+
+    # Install the texture rendering modules
+    cd /opt/hunyuan3d
+
+    # Install custom rasterizer
+    cd hy3dgen/texgen/custom_rasterizer
+    python setup.py install
+
+    # Install differentiable renderer
+    cd ../../texgen/differentiable_renderer
+    python setup.py install
+
+    # Return to main directory
+    cd /opt/hunyuan3d
+
+    # Create directory to store model outputs
+    mkdir -p /opt/hunyuan3d/outputs
+
+%runscript
+    cd /opt/hunyuan3d
+    if [ $# -eq 0 ]; then
+        # If no arguments provided, run the API server
+        exec python api_server.py --host 0.0.0.0 --port 8080
+    else
+        # If arguments provided, run the specified command
+        exec "$@"
+    fi
+
+%labels
+    Author Osmani Dion
+    Version v1.0
+    Description Hunyuan3D 2.0 container for high-resolution textured 3D asset generation
