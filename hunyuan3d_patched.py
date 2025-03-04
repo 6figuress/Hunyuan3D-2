@@ -64,22 +64,8 @@ class DegenerateFaceRemover:
     def __call__(self, mesh):
         # Remove degenerate faces
         valid_faces = ~(mesh.area_faces < 1e-8)  # Using area_faces instead of areas
-
-        # Check if we have any valid faces
-        if not any(valid_faces):
-            print("Warning: All faces are degenerate. Returning original mesh.")
-            return mesh
-
-        # Get indices of valid faces
-        valid_indices = np.where(valid_faces)[0]
-
-        # Make sure valid_indices is not empty before submesh
-        if len(valid_indices) == 0:
-            print("Warning: No valid faces found. Returning original mesh.")
-            return mesh
-
-        # Create submesh with only valid faces
-        mesh = mesh.submesh(valid_indices, append=True)
+        if not all(valid_faces):
+            mesh = mesh.submesh(np.where(valid_faces)[0], append=True)
         return mesh
 
 
@@ -345,13 +331,9 @@ def text_to_3d(prompt, output_path=None, seed=2025, texture=True):
 
     # Post-process mesh
     print("Post-processing mesh...")
-    try:
-        mesh = FloaterRemover()(mesh)
-        mesh = DegenerateFaceRemover()(mesh)
-        mesh = FaceReducer()(mesh)
-    except Exception as e:
-        print(f"Warning: Error during mesh post-processing: {e}")
-        print("Continuing with original mesh...")
+    mesh = FloaterRemover()(mesh)
+    mesh = DegenerateFaceRemover()(mesh)
+    mesh = FaceReducer()(mesh)
 
     mesh.export(mesh_path)
     print(f"Saved mesh to {mesh_path}")
