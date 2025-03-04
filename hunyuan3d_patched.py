@@ -83,17 +83,38 @@ def load_hunyuan_dit_pipeline(model_name):
     try:
         from hy3dgen.text2image import HunyuanDiTPipeline
 
+        print(f"Loading HunyuanDiTPipeline from {model_name}")
         return HunyuanDiTPipeline(model_name)
     except ImportError:
         # Fallback if the specialized pipeline is not available
         print(
             "HunyuanDiTPipeline not found, falling back to generic diffusers pipeline"
         )
-        from diffusers import DiffusionPipeline
+        from diffusers import DiffusionPipeline, StableDiffusionXLPipeline
 
-        return DiffusionPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
-        ).to("cuda" if torch.cuda.is_available() else "cpu")
+        print("Loading StableDiffusionXL as fallback")
+        try:
+            pipeline = StableDiffusionXLPipeline.from_pretrained(
+                "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
+            ).to("cuda" if torch.cuda.is_available() else "cpu")
+
+            # Create a wrapper function to make output consistent with HunyuanDiTPipeline
+            def wrapped_pipeline(prompt):
+                return pipeline(prompt)
+
+            return wrapped_pipeline
+        except Exception as e:
+            print(f"Error loading StableDiffusionXL: {e}")
+            print("Falling back to standard Stable Diffusion")
+
+            pipeline = DiffusionPipeline.from_pretrained(
+                "runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16
+            ).to("cuda" if torch.cuda.is_available() else "cpu")
+
+            def wrapped_pipeline(prompt):
+                return pipeline(prompt)
+
+            return wrapped_pipeline
 
 
 def image_to_3d(
@@ -258,7 +279,35 @@ def text_to_3d(prompt, output_path=None, seed=2025, texture=True):
 
     # Generate image from text
     print(f"Generating image from prompt: '{prompt}'")
-    image = t2i(prompt)
+    output = t2i(prompt)
+
+    # Handle different return types from different text-to-image models
+    if hasattr(output, "images"):
+        # For StableDiffusionXL and similar models that return a pipeline output object
+        image = output.images[0]
+    elif isinstance(output, list) and isinstance(output[0], Image.Image):
+        # For models that return a list of images
+        image = output[0]
+    elif isinstance(output, Image.Image):
+        # For models like HunyuanDiT that return a single image directly
+        image = output
+    else:
+        # Try to handle any other unexpected return type
+        print(
+            f"Warning: Unexpected return type from text-to-image model: {type(output)}"
+        )
+        if hasattr(output, "__getitem__"):
+            try:
+                image = output[0]
+                if not isinstance(image, Image.Image):
+                    raise ValueError(f"Expected PIL Image, got {type(image)}")
+            except (IndexError, TypeError, ValueError) as e:
+                print(f"Error extracting image from model output: {e}")
+                print("Using default image instead.")
+                image = Image.new("RGB", (512, 512), color="white")
+        else:
+            print("Using default image instead.")
+            image = Image.new("RGB", (512, 512), color="white")
 
     # Save intermediate image
     img_output_path = os.path.splitext(mesh_path)[0] + "_generated.png"

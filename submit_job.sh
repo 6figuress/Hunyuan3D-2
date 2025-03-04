@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1               # total number of tasks across all nodes
 #SBATCH --cpus-per-task=20       # cpu-cores per task (>1 if multi-threaded tasks)
 #SBATCH --mem-per-cpu=4G         # memory per cpu-core (4G per cpu-core is default)
-#SBATCH --time=00:05:00          # total run time limit (HH:MM:SS)
+#SBATCH --time=00:10:00          # total run time limit (HH:MM:SS)
 #SBATCH --gres=gpu:1             # number of gpus per node
 
 # Print job details for debugging
