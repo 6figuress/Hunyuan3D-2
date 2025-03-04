@@ -4,13 +4,15 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 %files
     # Copy the entire project directory from local machine
     ./ /opt/hunyuan3d/
-    # Note: This will copy everything from your current directory to /opt/hunyuan3d/
 
 %environment
     export LC_ALL=C
-    export PATH="/opt/conda/bin:$PATH"
     export PYTHONPATH="/opt/hunyuan3d:$PYTHONPATH"
     export HF_HOME="/opt/hunyuan3d/huggingface"
+    # Set CUDA environment variables
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=$CUDA_HOME/bin:$PATH
+    export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 
 %post
     # Update and install dependencies
@@ -27,54 +29,42 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
         libxrender1 \
         ninja-build \
         python3-dev \
+        python3-pip \
         && rm -rf /var/lib/apt/lists/*
 
-    # Install Miniconda
-    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
-    bash /tmp/miniconda.sh -b -p /opt/conda
-    rm /tmp/miniconda.sh
-
-    # Set path to conda without relying on .bashrc
-    export PATH="/opt/conda/bin:$PATH"
-
-    # Initialize conda for shell without sourcing .bashrc
-    conda init
-
-    # Directly enable conda command without source
-    eval "$(/opt/conda/bin/conda shell.bash hook)"
-
-    # Install PyTorch with CUDA 12.1
-    conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+    # Install PyTorch with CUDA 12.1 directly via pip
+    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
     # Install pip packages
     cd /opt/hunyuan3d
-    pip install -r requirements.txt
+    pip3 install -r requirements.txt
 
     # Set up HuggingFace cache directory
     mkdir -p /opt/hunyuan3d/huggingface
 
-    # Install the texture rendering modules
-    cd /opt/hunyuan3d
-
-    # Install custom rasterizer
-    cd hy3dgen/texgen/custom_rasterizer
-    python setup.py install
-
-    # Install differentiable renderer
-    cd ../../texgen/differentiable_renderer
-    python setup.py install
-
-    # Return to main directory
-    cd /opt/hunyuan3d
-
     # Create directory to store model outputs
     mkdir -p /opt/hunyuan3d/outputs
+
+    # Create a modified minimal_demo.py that avoids using custom extensions
+    cat > /opt/hunyuan3d/simple_demo.py << 'EOF'
+from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+
+# Load only the shape generation pipeline
+pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained('tencent/Hunyuan3D-2')
+
+# Generate a mesh without texture
+mesh = pipeline(image='assets/demo.png')[0]
+
+# Save the mesh
+mesh.export('output.glb')
+print("Mesh saved to output.glb")
+EOF
 
 %runscript
     cd /opt/hunyuan3d
     if [ $# -eq 0 ]; then
-        # If no arguments provided, run the API server
-        exec python api_server.py --host 0.0.0.0 --port 8080
+        # If no arguments provided, run simple demo
+        exec python3 simple_demo.py
     else
         # If arguments provided, run the specified command
         exec "$@"
