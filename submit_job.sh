@@ -11,7 +11,6 @@
 # Print job details for debugging
 echo "Job started at $(date)"
 echo "Running on $(hostname)"
-echo "Allocated GPU: $CUDA_VISIBLE_DEVICES"
 
 # Check if we received any command-line arguments
 if [ $# -eq 0 ]; then
@@ -25,7 +24,7 @@ fi
 echo "Executing: apptainer exec --nv image.sif $@"
 
 # Execute apptainer with all the arguments passed to this script
-apptainer exec --nv image.sif "$@"
+apptainer run --nv image.sif "$@"
 
 # Print job completion information
 echo "Job completed at $(date)"
