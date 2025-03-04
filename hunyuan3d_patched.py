@@ -63,7 +63,7 @@ class FloaterRemover:
 class DegenerateFaceRemover:
     def __call__(self, mesh):
         # Remove degenerate faces
-        valid_faces = ~(mesh.areas < 1e-8)
+        valid_faces = ~(mesh.area_faces < 1e-8)  # Using area_faces instead of areas
         if not all(valid_faces):
             mesh = mesh.submesh(np.where(valid_faces)[0], append=True)
         return mesh
