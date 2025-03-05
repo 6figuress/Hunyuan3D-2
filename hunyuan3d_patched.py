@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+import warnings
 
 import huggingface_hub
 import numpy as np
@@ -10,16 +11,29 @@ import torch
 import trimesh
 from PIL import Image
 
+# Suppress warning messages
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 # Patch huggingface_hub to use home directory cache
 original_snapshot_download = huggingface_hub.snapshot_download
 
 
 def patched_snapshot_download(*args, **kwargs):
-    # Force cache_dir to be in user's home directory
-    cache_dir = os.path.join(os.environ["HOME"], ".hunyuan3d_cache")
+    # Force cache_dir to be in user's home directory or a writable location
+    if "HF_HOME" in os.environ:
+        cache_dir = os.environ["HF_HOME"]
+    else:
+        cache_dir = os.path.join(os.environ["HOME"], ".hunyuan3d_cache")
+
+    # Ensure the directory exists
     os.makedirs(cache_dir, exist_ok=True)
+
+    # Set cache_dir in kwargs
     kwargs["cache_dir"] = cache_dir
     print(f"Using cache directory: {cache_dir}")
+
+    # Call the original function
     return original_snapshot_download(*args, **kwargs)
 
 
@@ -49,73 +63,133 @@ class BackgroundRemover:
             return self.remove(image)
 
 
-class FloaterRemover:
+class SafeMeshProcessor:
+    """Base class for safe mesh processing operations"""
+
     def __call__(self, mesh):
-        # Simple implementation to remove disconnected components
-        components = trimesh.graph.connected_components(mesh.face_adjacency)
-        if len(components) > 1:
-            # Keep only the largest component
-            main_component = max(components, key=len)
-            mesh = mesh.submesh([main_component], append=True)
+        try:
+            return self._process(mesh)
+        except Exception as e:
+            print(f"Error in {self.__class__.__name__}: {e}")
+            print("Returning original mesh")
+            return mesh
+
+    def _process(self, mesh):
+        # To be implemented by subclasses
         return mesh
 
 
-class DegenerateFaceRemover:
-    def __call__(self, mesh):
+class FloaterRemover(SafeMeshProcessor):
+    def _process(self, mesh):
+        # Check if mesh has face_adjacency attribute
+        if not hasattr(mesh, "face_adjacency"):
+            print("Warning: Mesh doesn't have face_adjacency attribute")
+            return mesh
+
         try:
-            # Remove degenerate faces
-            # Make sure area_faces attribute exists
-            if not hasattr(mesh, "area_faces"):
-                print(
-                    "Warning: Mesh doesn't have area_faces attribute. Returning original mesh."
-                )
-                return mesh
-
-            valid_faces = ~(mesh.area_faces < 1e-8)  # Using area_faces instead of areas
-
-            # Check if valid_faces is empty or None
-            if valid_faces is None or len(valid_faces) == 0:
-                print("Warning: No face area data available. Returning original mesh.")
-                return mesh
-
-            # Check if we have any valid faces
-            if not any(valid_faces):
-                print("Warning: All faces are degenerate. Returning original mesh.")
-                return mesh
-
-            # Get indices of valid faces using explicit conversion to handle odd types
-            try:
-                valid_indices = np.where(valid_faces)[0]
-
-                # Double-check valid_indices
-                if valid_indices is None or not isinstance(valid_indices, np.ndarray):
-                    print("Warning: Invalid indices type. Returning original mesh.")
-                    return mesh
-
-                # Make sure valid_indices is not empty
-                if valid_indices.size == 0:
-                    print("Warning: No valid faces found. Returning original mesh.")
-                    return mesh
-
-                # Create submesh with only valid faces
-                mesh = mesh.submesh(valid_indices, append=True)
-                return mesh
-
-            except Exception as e:
-                print(f"Error finding valid face indices: {e}")
-                return mesh
-
+            components = trimesh.graph.connected_components(mesh.face_adjacency)
+            if len(components) > 1:
+                main_component = max(components, key=len)
+                return mesh.submesh([main_component], append=True)
+            return mesh
         except Exception as e:
-            print(f"Error in DegenerateFaceRemover: {e}")
+            print(f"Error in connected components calculation: {e}")
             return mesh
 
 
-class FaceReducer:
-    def __call__(self, mesh, target_ratio=0.5):
-        if len(mesh.faces) > 10000:
-            mesh = mesh.simplify_quadratic_decimation(
+class DegenerateFaceRemover(SafeMeshProcessor):
+    def _process(self, mesh):
+        # Check if mesh has necessary attributes
+        if not hasattr(mesh, "area_faces"):
+            print("Warning: Mesh doesn't have area_faces attribute")
+            if hasattr(mesh, "faces") and hasattr(mesh, "vertices"):
+                # Try to compute face areas manually
+                try:
+                    areas = []
+                    for face in mesh.faces:
+                        verts = mesh.vertices[face]
+                        # Simple triangle area calculation
+                        v0, v1, v2 = verts
+                        area = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0))
+                        areas.append(area)
+                    valid_faces = np.array(areas) >= 1e-8
+                except Exception as e:
+                    print(f"Could not compute face areas: {e}")
+                    return mesh
+            else:
+                return mesh
+        else:
+            # Use the built-in face areas
+            valid_faces = mesh.area_faces >= 1e-8
+
+        # Check if we have any valid faces
+        if np.count_nonzero(valid_faces) == 0:
+            print("Warning: No valid faces found")
+            return mesh
+
+        # Get indices of valid faces
+        try:
+            valid_indices = np.where(valid_faces)[0]
+            if len(valid_indices) == 0:
+                return mesh
+
+            # Create submesh with only valid faces
+            return mesh.submesh(valid_indices, append=True)
+        except Exception as e:
+            print(f"Error in submesh creation: {e}")
+            return mesh
+
+
+class FaceReducer(SafeMeshProcessor):
+    def _process(self, mesh):
+        target_ratio = 0.5
+
+        # Check if mesh has simplify_quadratic_decimation method
+        if not hasattr(mesh, "simplify_quadratic_decimation"):
+            print("Warning: Mesh doesn't have simplify_quadratic_decimation method")
+            return mesh
+
+        # Skip if mesh has too few faces
+        if len(mesh.faces) <= 10000:
+            return mesh
+
+        try:
+            return mesh.simplify_quadratic_decimation(
                 int(len(mesh.faces) * target_ratio)
             )
+        except Exception as e:
+            print(f"Error in mesh simplification: {e}")
+            return mesh
+
+
+def safe_post_process(mesh):
+    """Safely post-process a mesh, handling all errors"""
+    print("Post-processing mesh...")
+    try:
+        # Skip if mesh is invalid
+        if mesh is None:
+            print("Error: Mesh is None")
+            return mesh
+
+        # Check if mesh has basic attributes
+        if not hasattr(mesh, "faces") or not hasattr(mesh, "vertices"):
+            print("Error: Mesh is missing basic attributes (faces or vertices)")
+            return mesh
+
+        # Apply post-processing steps
+        print("1. Removing floating components...")
+        mesh = FloaterRemover()(mesh)
+
+        print("2. Removing degenerate faces...")
+        mesh = DegenerateFaceRemover()(mesh)
+
+        print("3. Reducing face count...")
+        mesh = FaceReducer()(mesh)
+
+        return mesh
+    except Exception as e:
+        print(f"Error during mesh post-processing: {e}")
+        print("Continuing with original mesh...")
         return mesh
 
 
@@ -158,32 +232,57 @@ def load_hunyuan_dit_pipeline(model_name):
             return wrapped_pipeline
 
 
-def safe_post_process(mesh):
-    """Safely post-process a mesh, handling any errors"""
-    print("Post-processing mesh...")
-    try:
-        print("Removing floaters...")
-        mesh = FloaterRemover()(mesh)
+def find_model_path(model_name="tencent/Hunyuan3D-2", subfolder=None):
+    """Find a valid model path from several possible locations"""
+    # Check for a pre-downloaded model
+    if "HUNYUAN3D_MODELS_DIR" in os.environ:
+        base_dir = os.environ["HUNYUAN3D_MODELS_DIR"]
+        model_dir = os.path.join(base_dir, model_name.split("/")[-1])
+        if subfolder:
+            model_dir = os.path.join(model_dir, subfolder)
+        if os.path.exists(model_dir):
+            return model_dir
 
-        print("Removing degenerate faces...")
-        mesh = DegenerateFaceRemover()(mesh)
+    # Check standard locations
+    cache_root = os.environ.get(
+        "HF_HOME", os.path.join(os.environ["HOME"], ".hunyuan3d_cache")
+    )
+    potential_paths = [
+        # Common Huggingface Hub cache locations
+        os.path.join(cache_root, "hub"),
+        os.path.join(
+            cache_root, "models--" + model_name.replace("/", "--"), "snapshots"
+        ),
+        os.path.join(os.environ["HOME"], ".cache", "huggingface", "hub"),
+        os.path.join("/opt/hunyuan3d/models"),
+        os.path.join("/tmp/huggingface_cache"),
+    ]
 
-        print("Reducing face count...")
-        mesh = FaceReducer()(mesh)
+    # Try to find any existing path
+    for path in potential_paths:
+        if os.path.exists(path):
+            print(f"Found potential model path: {path}")
+            if subfolder:
+                subpath = os.path.join(path, subfolder)
+                if os.path.exists(subpath):
+                    return subpath
+            return path
 
-        return mesh
-    except Exception as e:
-        print(f"Error during mesh post-processing: {e}")
-        print("Continuing with original mesh...")
-        return mesh
+    # If all else fails, return the model name and let huggingface_hub handle it
+    print(f"No local model found, will try to download from HuggingFace: {model_name}")
+    return model_name
 
 
 def image_to_3d(
     image_path="assets/demo.png", output_path=None, seed=2025, texture=True
 ):
     """Convert an image to a 3D model using Hunyuan3D"""
+    # Setup output paths
     if output_path is None:
-        output_dir = os.path.join(os.environ["HOME"], "hunyuan3d_outputs")
+        if "HUNYUAN3D_OUTPUT_DIR" in os.environ:
+            output_dir = os.environ["HUNYUAN3D_OUTPUT_DIR"]
+        else:
+            output_dir = os.path.join(os.environ["HOME"], "hunyuan3d_outputs")
         os.makedirs(output_dir, exist_ok=True)
         mesh_path = os.path.join(output_dir, "mesh.glb")
         texture_path = os.path.join(output_dir, "texture.glb")
@@ -195,39 +294,75 @@ def image_to_3d(
             + os.path.splitext(output_path)[1]
         )
 
+    # Initialize background remover
     rembg = BackgroundRemover()
-    model_path = "tencent/Hunyuan3D-2"
 
+    # Load the image
     print(f"Loading image from {image_path}")
-    image = Image.open(image_path)
+    try:
+        image = Image.open(image_path)
+    except Exception as e:
+        print(f"Error loading image: {e}")
+        print("Using a blank image instead")
+        image = Image.new("RGB", (512, 512), color="white")
 
+    # Remove background if needed
     if image.mode == "RGB":
         print("Removing background...")
-        image = rembg(image)
+        try:
+            image = rembg(image)
+        except Exception as e:
+            print(f"Error removing background: {e}")
+            print("Continuing with original image")
 
+    # Load shape generation model
     print("Loading Hunyuan3D-DiT pipeline...")
-    pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(model_path)
+    try:
+        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
+        model_path = find_model_path("tencent/Hunyuan3D-2")
+        pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(model_path)
+    except Exception as e:
+        print(f"Error loading shape generation model: {e}")
+        sys.exit(1)
+
+    # Generate 3D mesh
     print("Generating 3D mesh...")
-    mesh = pipeline(
-        image=image,
-        num_inference_steps=30,
-        mc_algo="mc",
-        generator=torch.manual_seed(seed),
-    )[0]
+    try:
+        mesh = pipeline(
+            image=image,
+            num_inference_steps=30,
+            mc_algo="mc",
+            generator=torch.manual_seed(seed),
+        )[0]
+    except Exception as e:
+        print(f"Error generating mesh: {e}")
+        sys.exit(1)
 
-    print("Post-processing mesh...")
+    # Post-process the mesh safely
     mesh = safe_post_process(mesh)
 
-    mesh.export(mesh_path)
-    print(f"Saved mesh to {mesh_path}")
+    # Save the untextured mesh
+    try:
+        mesh.export(mesh_path)
+        print(f"Saved mesh to {mesh_path}")
+    except Exception as e:
+        print(f"Error saving mesh: {e}")
+        sys.exit(1)
 
+    # Generate texture if requested
     if texture:
         try:
             print("Generating texture...")
             from hy3dgen.texgen import Hunyuan3DPaintPipeline
 
-            pipeline = Hunyuan3DPaintPipeline.from_pretrained(model_path)
+            # Try to find the texture model locally first
+            texture_model_path = find_model_path(
+                "tencent/Hunyuan3D-2", "hunyuan3d-paint-v2-0"
+            )
+            print(f"Loading texture model from: {texture_model_path}")
+
+            pipeline = Hunyuan3DPaintPipeline.from_pretrained(texture_model_path)
             textured_mesh = pipeline(mesh, image=image)
             textured_mesh.export(texture_path)
             print(f"Saved textured mesh to {texture_path}")
@@ -244,8 +379,12 @@ def image_to_3d_fast(
     image_path="assets/demo.png", output_path=None, seed=2025, texture=True
 ):
     """Convert an image to a 3D model using Hunyuan3D-DiT-Fast"""
+    # Setup output paths
     if output_path is None:
-        output_dir = os.path.join(os.environ["HOME"], "hunyuan3d_outputs")
+        if "HUNYUAN3D_OUTPUT_DIR" in os.environ:
+            output_dir = os.environ["HUNYUAN3D_OUTPUT_DIR"]
+        else:
+            output_dir = os.path.join(os.environ["HOME"], "hunyuan3d_outputs")
         os.makedirs(output_dir, exist_ok=True)
         mesh_path = os.path.join(output_dir, "mesh_fast.glb")
         texture_path = os.path.join(output_dir, "texture_fast.glb")
@@ -257,41 +396,77 @@ def image_to_3d_fast(
             + os.path.splitext(output_path)[1]
         )
 
+    # Initialize background remover
     rembg = BackgroundRemover()
-    model_path = "tencent/Hunyuan3D-2"
 
+    # Load the image
     print(f"Loading image from {image_path}")
-    image = Image.open(image_path)
+    try:
+        image = Image.open(image_path)
+    except Exception as e:
+        print(f"Error loading image: {e}")
+        print("Using a blank image instead")
+        image = Image.new("RGB", (512, 512), color="white")
 
+    # Remove background if needed
     if image.mode == "RGB":
         print("Removing background...")
-        image = rembg(image)
+        try:
+            image = rembg(image)
+        except Exception as e:
+            print(f"Error removing background: {e}")
+            print("Continuing with original image")
 
+    # Load fast shape generation model
     print("Loading Hunyuan3D-DiT-Fast pipeline...")
-    pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-        model_path, subfolder="hunyuan3d-dit-v2-0-fast", variant="fp16"
-    )
+    try:
+        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
+        model_path = find_model_path("tencent/Hunyuan3D-2")
+        pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            model_path, subfolder="hunyuan3d-dit-v2-0-fast", variant="fp16"
+        )
+    except Exception as e:
+        print(f"Error loading fast shape generation model: {e}")
+        sys.exit(1)
+
+    # Generate 3D mesh
     print("Generating 3D mesh (fast mode)...")
-    mesh = pipeline(
-        image=image,
-        num_inference_steps=30,
-        mc_algo="mc",
-        generator=torch.manual_seed(seed),
-    )[0]
+    try:
+        mesh = pipeline(
+            image=image,
+            num_inference_steps=30,
+            mc_algo="mc",
+            generator=torch.manual_seed(seed),
+        )[0]
+    except Exception as e:
+        print(f"Error generating mesh: {e}")
+        sys.exit(1)
 
-    print("Post-processing mesh...")
+    # Post-process the mesh safely
     mesh = safe_post_process(mesh)
 
-    mesh.export(mesh_path)
-    print(f"Saved mesh to {mesh_path}")
+    # Save the untextured mesh
+    try:
+        mesh.export(mesh_path)
+        print(f"Saved mesh to {mesh_path}")
+    except Exception as e:
+        print(f"Error saving mesh: {e}")
+        sys.exit(1)
 
+    # Generate texture if requested
     if texture:
         try:
             print("Generating texture...")
             from hy3dgen.texgen import Hunyuan3DPaintPipeline
 
-            pipeline = Hunyuan3DPaintPipeline.from_pretrained(model_path)
+            # Try to find the texture model locally first
+            texture_model_path = find_model_path(
+                "tencent/Hunyuan3D-2", "hunyuan3d-paint-v2-0"
+            )
+            print(f"Loading texture model from: {texture_model_path}")
+
+            pipeline = Hunyuan3DPaintPipeline.from_pretrained(texture_model_path)
             textured_mesh = pipeline(mesh, image=image)
             textured_mesh.export(texture_path)
             print(f"Saved textured mesh to {texture_path}")
@@ -306,8 +481,12 @@ def image_to_3d_fast(
 
 def text_to_3d(prompt, output_path=None, seed=2025, texture=True):
     """Generate a 3D model from a text prompt"""
+    # Setup output paths
     if output_path is None:
-        output_dir = os.path.join(os.environ["HOME"], "hunyuan3d_outputs")
+        if "HUNYUAN3D_OUTPUT_DIR" in os.environ:
+            output_dir = os.environ["HUNYUAN3D_OUTPUT_DIR"]
+        else:
+            output_dir = os.path.join(os.environ["HOME"], "hunyuan3d_outputs")
         os.makedirs(output_dir, exist_ok=True)
         mesh_path = os.path.join(output_dir, "text_to_3d.glb")
         texture_path = os.path.join(output_dir, "text_to_3d_textured.glb")
@@ -321,22 +500,38 @@ def text_to_3d(prompt, output_path=None, seed=2025, texture=True):
 
     print(f"Starting text-to-3D generation with prompt: '{prompt}'")
 
+    # Initialize background remover
     rembg = BackgroundRemover()
 
     # Load text-to-image model
     print("Loading text-to-image model...")
-    t2i = load_hunyuan_dit_pipeline(
-        "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled"
-    )
+    try:
+        t2i = load_hunyuan_dit_pipeline(
+            "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled"
+        )
+    except Exception as e:
+        print(f"Error loading text-to-image model: {e}")
+        sys.exit(1)
 
     # Load 3D generation model
     print("Loading 3D generation model...")
-    model_path = "tencent/Hunyuan3D-2"
-    i23d = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(model_path)
+    try:
+        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+
+        model_path = find_model_path("tencent/Hunyuan3D-2")
+        i23d = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(model_path)
+    except Exception as e:
+        print(f"Error loading 3D generation model: {e}")
+        sys.exit(1)
 
     # Generate image from text
     print(f"Generating image from prompt: '{prompt}'")
-    output = t2i(prompt)
+    try:
+        output = t2i(prompt)
+    except Exception as e:
+        print(f"Error generating image from text: {e}")
+        print("Using a blank image instead")
+        output = Image.new("RGB", (512, 512), color="white")
 
     # Handle different return types from different text-to-image models
     if hasattr(output, "images"):
@@ -368,41 +563,65 @@ def text_to_3d(prompt, output_path=None, seed=2025, texture=True):
 
     # Save intermediate image
     img_output_path = os.path.splitext(mesh_path)[0] + "_generated.png"
-    image.save(img_output_path)
-    print(f"Saved generated image to {img_output_path}")
+    try:
+        image.save(img_output_path)
+        print(f"Saved generated image to {img_output_path}")
+    except Exception as e:
+        print(f"Error saving generated image: {e}")
 
     # Remove background
     print("Removing background...")
-    image = rembg(image)
+    try:
+        image = rembg(image)
+    except Exception as e:
+        print(f"Error removing background: {e}")
+        print("Continuing with original image")
 
     # Save processed image
     img_processed_path = os.path.splitext(mesh_path)[0] + "_processed.png"
-    image.save(img_processed_path)
-    print(f"Saved processed image to {img_processed_path}")
+    try:
+        image.save(img_processed_path)
+        print(f"Saved processed image to {img_processed_path}")
+    except Exception as e:
+        print(f"Error saving processed image: {e}")
 
     # Generate 3D mesh
     print("Generating 3D mesh...")
-    mesh = i23d(
-        image, num_inference_steps=30, mc_algo="mc", generator=torch.manual_seed(seed)
-    )[0]
-
-    # Post-process mesh
-    print("Post-processing mesh...")
     try:
-        mesh = safe_post_process(mesh)
+        mesh = i23d(
+            image,
+            num_inference_steps=30,
+            mc_algo="mc",
+            generator=torch.manual_seed(seed),
+        )[0]
     except Exception as e:
-        print(f"Warning: Error during mesh post-processing: {e}")
-        print("Continuing with original mesh...")
+        print(f"Error generating mesh: {e}")
+        sys.exit(1)
 
-    mesh.export(mesh_path)
-    print(f"Saved mesh to {mesh_path}")
+    # Post-process the mesh safely
+    mesh = safe_post_process(mesh)
 
+    # Save the untextured mesh
+    try:
+        mesh.export(mesh_path)
+        print(f"Saved mesh to {mesh_path}")
+    except Exception as e:
+        print(f"Error saving mesh: {e}")
+        sys.exit(1)
+
+    # Generate texture if requested
     if texture:
         try:
             print("Generating texture...")
             from hy3dgen.texgen import Hunyuan3DPaintPipeline
 
-            pipeline = Hunyuan3DPaintPipeline.from_pretrained(model_path)
+            # Try to find the texture model locally first
+            texture_model_path = find_model_path(
+                "tencent/Hunyuan3D-2", "hunyuan3d-paint-v2-0"
+            )
+            print(f"Loading texture model from: {texture_model_path}")
+
+            pipeline = Hunyuan3DPaintPipeline.from_pretrained(texture_model_path)
             textured_mesh = pipeline(mesh, image=image, prompt=prompt)
             textured_mesh.export(texture_path)
             print(f"Saved textured mesh to {texture_path}")
@@ -586,6 +805,5 @@ def main():
 
 if __name__ == "__main__":
     # Import required modules only at runtime
-    from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
     main()

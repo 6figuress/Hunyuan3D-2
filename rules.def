@@ -8,8 +8,9 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
     # Include static duck OBJ file
     rubber_duck.obj /opt/hunyuan3d/static_model/model.obj
 
-    # Ensure the patched scripts are included
+    # Ensure our scripts are included
     hunyuan3d_patched.py /opt/hunyuan3d/hunyuan3d_patched.py
+    download_models.py /opt/hunyuan3d/download_models.py
 
 %environment
     export LC_ALL=C
@@ -17,6 +18,8 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
     export CUDA_HOME=/usr/local/cuda
     export PATH=$CUDA_HOME/bin:$PATH
     export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+    export HF_HOME="/tmp/huggingface_cache"
+    export HUNYUAN3D_MODELS_DIR="/opt/hunyuan3d/models"
 
 %post
     # Update and install dependencies
@@ -34,35 +37,86 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
         ninja-build \
         python3-dev \
         python3-pip \
+        software-properties-common \
         && rm -rf /var/lib/apt/lists/*
 
-    # Install PyTorch with CUDA 12.1 directly via pip
-    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    # Add newer repositories to get updated libraries
+    add-apt-repository -y ppa:ubuntu-toolchain-r/test
+    apt-get update && apt-get install -y --no-install-recommends \
+        libstdc++6 \
+        gcc-11 \
+        g++-11 \
+        && rm -rf /var/lib/apt/lists/*
 
-    # Install pip packages
+    # Upgrade base Python packages
+    pip3 install --upgrade pip setuptools wheel
+
+    # Install PyTorch with CUDA 12.1
+    pip3 install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+
+    # Install specific versions of critical dependencies
+    pip3 install --no-cache-dir \
+        huggingface_hub==0.19.4 \
+        transformers==4.35.2 \
+        diffusers==0.24.0 \
+        accelerate==0.24.1 \
+        trimesh==3.22.4 \
+        rtree==1.1.0 \
+        onnx==1.15.0 \
+        onnxruntime-gpu==1.16.3 \
+        rembg==2.0.50 \
+        numpy==1.24.4 \
+        scikit-image==0.21.0 \
+        scipy==1.10.1 \
+        Pillow==10.1.0 \
+        tqdm==4.66.1 \
+        einops==0.7.0
+
+    # Install pip packages from requirements.txt
     cd /opt/hunyuan3d
     pip3 install -r requirements.txt
 
+    # Create required directories
+    mkdir -p /opt/hunyuan3d/models
+    mkdir -p /opt/hunyuan3d/static_model
+    mkdir -p /opt/hunyuan3d/outputs
+    mkdir -p /tmp/huggingface_cache
+    chmod -R 777 /opt/hunyuan3d/models
+    chmod -R 777 /opt/hunyuan3d/outputs
+    chmod -R 777 /tmp/huggingface_cache
+
+    # Install custom rasterizer
+    cd /opt/hunyuan3d/hy3dgen/texgen/custom_rasterizer
+    python3 setup.py install || echo "Warning: custom_rasterizer installation failed, texturing may not work"
+
+    # Install differentiable renderer
+    cd /opt/hunyuan3d/hy3dgen/texgen/differentiable_renderer
+    python3 setup.py install || echo "Warning: differentiable_renderer installation failed, texturing may not work"
+
     # Make the scripts executable
     chmod +x /opt/hunyuan3d/hunyuan3d_patched.py
+    chmod +x /opt/hunyuan3d/download_models.py
 
-    # Create static model directory if it doesn't exist
-    mkdir -p /opt/hunyuan3d/static_model
-
-    # Create output directories
-    mkdir -p /tmp/outputs
+    # Try to pre-download models
+    cd /opt/hunyuan3d
+    python3 download_models.py || echo "Model download will be attempted at runtime"
 
 %runscript
-    # Ensure the HOME directory has the cache and output directories
+    # Ensure cache directories exist
     mkdir -p $HOME/.hunyuan3d_cache
     mkdir -p $HOME/hunyuan3d_outputs
 
-    exec /opt/hunyuan3d/hunyuan3d_patched.py "$@"
+    # Set HOME directory to writable path if needed
+    export HF_HOME=$HOME/.hunyuan3d_cache
+    export HUNYUAN3D_OUTPUT_DIR=$HOME/hunyuan3d_outputs
+
+    # Execute the script with passed arguments
+    exec python3 /opt/hunyuan3d/hunyuan3d_patched.py "$@"
 
 %labels
-    Author Osmani Dion
-    Version v1.0
-    Description Hunyuan3D 2.0 container for high-resolution textured 3D asset generation
+    Author "Osmani Dion"
+    Version "1.0"
+    Description "Hunyuan3D 2.0 container for high-resolution textured 3D asset generation"
 
 %help
     This container provides the Hunyuan3D 2.0 environment for generating high-resolution textured 3D assets.
@@ -70,13 +124,24 @@ From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
     Usage:
 
     1. Generate 3D from image:
-       $ apptainer run --nv image.sif --image /path/to/your/image.jpg
+       $ apptainer run --nv hunyuan3d.sif image-to-3d --image /path/to/your/image.jpg
 
-    2. Texture the static OBJ file included in the container:
-       $ apptainer run --nv image.sif --texture-static --image /path/to/ref_image.jpg
+    2. Generate 3D with fast model:
+       $ apptainer run --nv hunyuan3d.sif fast --image /path/to/your/image.jpg
 
-    3. Texture with a text prompt:
-       $ apptainer run --nv image.sif --texture-static --image /path/to/ref_image.jpg --prompt "marble statue"
+    3. Generate 3D from text prompt:
+       $ apptainer run --nv hunyuan3d.sif text-to-3d --prompt "a red sports car"
+
+    4. Generate 3D without texture (if having texture issues):
+       $ apptainer run --nv hunyuan3d.sif image-to-3d --no-texture
+
+    5. Texture the existing static model:
+       $ apptainer run --nv hunyuan3d.sif texture --prompt "red rubber texture"
+
+    For better persistence, you can bind your host directories:
+    $ apptainer run --nv -B $HOME/.hunyuan3d_cache:/tmp/huggingface_cache,\
+                       $HOME/hunyuan3d_outputs:/opt/hunyuan3d/outputs \
+                       hunyuan3d.sif [command]
 
     The container will create:
     - Cache directory in $HOME/.hunyuan3d_cache
