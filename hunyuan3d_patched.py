@@ -62,25 +62,52 @@ class FloaterRemover:
 
 class DegenerateFaceRemover:
     def __call__(self, mesh):
-        # Remove degenerate faces
-        valid_faces = ~(mesh.area_faces < 1e-8)  # Using area_faces instead of areas
+        try:
+            # Remove degenerate faces
+            # Make sure area_faces attribute exists
+            if not hasattr(mesh, "area_faces"):
+                print(
+                    "Warning: Mesh doesn't have area_faces attribute. Returning original mesh."
+                )
+                return mesh
 
-        # Check if we have any valid faces
-        if not any(valid_faces):
-            print("Warning: All faces are degenerate. Returning original mesh.")
+            valid_faces = ~(mesh.area_faces < 1e-8)  # Using area_faces instead of areas
+
+            # Check if valid_faces is empty or None
+            if valid_faces is None or len(valid_faces) == 0:
+                print("Warning: No face area data available. Returning original mesh.")
+                return mesh
+
+            # Check if we have any valid faces
+            if not any(valid_faces):
+                print("Warning: All faces are degenerate. Returning original mesh.")
+                return mesh
+
+            # Get indices of valid faces using explicit conversion to handle odd types
+            try:
+                valid_indices = np.where(valid_faces)[0]
+
+                # Double-check valid_indices
+                if valid_indices is None or not isinstance(valid_indices, np.ndarray):
+                    print("Warning: Invalid indices type. Returning original mesh.")
+                    return mesh
+
+                # Make sure valid_indices is not empty
+                if valid_indices.size == 0:
+                    print("Warning: No valid faces found. Returning original mesh.")
+                    return mesh
+
+                # Create submesh with only valid faces
+                mesh = mesh.submesh(valid_indices, append=True)
+                return mesh
+
+            except Exception as e:
+                print(f"Error finding valid face indices: {e}")
+                return mesh
+
+        except Exception as e:
+            print(f"Error in DegenerateFaceRemover: {e}")
             return mesh
-
-        # Get indices of valid faces
-        valid_indices = np.where(valid_faces)[0]
-
-        # Make sure valid_indices is not empty before submesh
-        if len(valid_indices) == 0:
-            print("Warning: No valid faces found. Returning original mesh.")
-            return mesh
-
-        # Create submesh with only valid faces
-        mesh = mesh.submesh(valid_indices, append=True)
-        return mesh
 
 
 class FaceReducer:
@@ -131,6 +158,26 @@ def load_hunyuan_dit_pipeline(model_name):
             return wrapped_pipeline
 
 
+def safe_post_process(mesh):
+    """Safely post-process a mesh, handling any errors"""
+    print("Post-processing mesh...")
+    try:
+        print("Removing floaters...")
+        mesh = FloaterRemover()(mesh)
+
+        print("Removing degenerate faces...")
+        mesh = DegenerateFaceRemover()(mesh)
+
+        print("Reducing face count...")
+        mesh = FaceReducer()(mesh)
+
+        return mesh
+    except Exception as e:
+        print(f"Error during mesh post-processing: {e}")
+        print("Continuing with original mesh...")
+        return mesh
+
+
 def image_to_3d(
     image_path="assets/demo.png", output_path=None, seed=2025, texture=True
 ):
@@ -170,9 +217,7 @@ def image_to_3d(
     )[0]
 
     print("Post-processing mesh...")
-    mesh = FloaterRemover()(mesh)
-    mesh = DegenerateFaceRemover()(mesh)
-    mesh = FaceReducer()(mesh)
+    mesh = safe_post_process(mesh)
 
     mesh.export(mesh_path)
     print(f"Saved mesh to {mesh_path}")
@@ -236,9 +281,7 @@ def image_to_3d_fast(
     )[0]
 
     print("Post-processing mesh...")
-    mesh = FloaterRemover()(mesh)
-    mesh = DegenerateFaceRemover()(mesh)
-    mesh = FaceReducer()(mesh)
+    mesh = safe_post_process(mesh)
 
     mesh.export(mesh_path)
     print(f"Saved mesh to {mesh_path}")
@@ -346,9 +389,7 @@ def text_to_3d(prompt, output_path=None, seed=2025, texture=True):
     # Post-process mesh
     print("Post-processing mesh...")
     try:
-        mesh = FloaterRemover()(mesh)
-        mesh = DegenerateFaceRemover()(mesh)
-        mesh = FaceReducer()(mesh)
+        mesh = safe_post_process(mesh)
     except Exception as e:
         print(f"Warning: Error during mesh post-processing: {e}")
         print("Continuing with original mesh...")
