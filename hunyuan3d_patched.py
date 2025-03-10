@@ -756,7 +756,7 @@ def main():
     local_tex_parser.add_argument(
         "--texture",
         type=str,
-        default="duck_texture.jpg",
+        default="duck_texture.png",
         help="Path to texture image"
     )
     local_tex_parser.add_argument(
