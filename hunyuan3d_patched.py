@@ -700,7 +700,7 @@ def texture_existing_obj(obj_path, image_path=None, prompt=None, output_path=Non
 
 
 def texture_local_model(model_path="rubber_duck.obj",
-                       texture_image="duck_texture.jpg",
+                       texture_image="duck_texture.png",
                        output_path="rubber_duck_textured.glb"):
     """Texture a local 3D model with a specific image"""
 
