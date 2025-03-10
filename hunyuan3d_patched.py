@@ -699,11 +699,72 @@ def texture_existing_obj(obj_path, image_path=None, prompt=None, output_path=Non
     return output_path
 
 
+def texture_local_model(model_path="rubber_duck.obj",
+                       texture_image="duck_texture.jpg",
+                       output_path="rubber_duck_textured.glb"):
+    """Texture a local 3D model with a specific image"""
+
+    print(f"Loading model from {model_path}")
+    try:
+        mesh = trimesh.load(model_path)
+        print(f"Model loaded successfully with {len(mesh.vertices)} vertices and {len(mesh.faces)} faces")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return None
+
+    print(f"Loading texture image from {texture_image}")
+    try:
+        image = Image.open(texture_image)
+        image = image.convert("RGB")
+    except Exception as e:
+        print(f"Error loading texture image: {e}")
+        return None
+
+    print("Loading Hunyuan3D-Paint pipeline...")
+    try:
+        from hy3dgen.texgen import Hunyuan3DPaintPipeline
+        pipeline = Hunyuan3DPaintPipeline.from_pretrained("tencent/Hunyuan3D-2")
+    except Exception as e:
+        print(f"Error loading texture pipeline: {e}")
+        return None
+
+    print("Applying texture...")
+    try:
+        textured_mesh = pipeline(mesh, image=image)
+        textured_mesh.export(output_path)
+        print(f"Textured model saved to {output_path}")
+        return output_path
+    except Exception as e:
+        print(f"Error during texturing: {e}")
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Hunyuan3D 2.0 - Text/Image to 3D Generation"
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    local_tex_parser = subparsers.add_parser("texture-local",
+        help="Texture a local model with a specific image")
+    local_tex_parser.add_argument(
+        "--model",
+        type=str,
+        default="rubber_duck.obj",
+        help="Path to input 3D model file"
+    )
+    local_tex_parser.add_argument(
+        "--texture",
+        type=str,
+        default="duck_texture.jpg",
+        help="Path to texture image"
+    )
+    local_tex_parser.add_argument(
+        "--output",
+        type=str,
+        default="rubber_duck_textured.glb",
+        help="Output path for textured model"
+    )
 
     # Image to 3D command
     i2d_parser = subparsers.add_parser(
@@ -801,6 +862,8 @@ def main():
         text_to_3d(args.prompt, args.output, args.seed, not args.no_texture)
     elif args.command == "texture":
         texture_existing_obj(args.obj, args.image, args.prompt, args.output)
+    elif args.command == "texture-local":
+        texture_local_model(args.model, args.texture, args.output)
 
 
 if __name__ == "__main__":
