@@ -723,9 +723,15 @@ def texture_local_model(model_path="rubber_duck.obj",
     print("Loading Hunyuan3D-Paint pipeline...")
     try:
         from hy3dgen.texgen import Hunyuan3DPaintPipeline
-        pipeline = Hunyuan3DPaintPipeline.from_pretrained("tencent/Hunyuan3D-2")
+
+        # Use find_model_path helper function to locate the model
+        texture_model_path = find_model_path("tencent/Hunyuan3D-2", "hunyuan3d-paint-v2-0")
+        print(f"Loading texture model from: {texture_model_path}")
+
+        pipeline = Hunyuan3DPaintPipeline.from_pretrained(texture_model_path)
     except Exception as e:
         print(f"Error loading texture pipeline: {e}")
+        print(f"Detailed error: {str(e)}")
         return None
 
     print("Applying texture...")
